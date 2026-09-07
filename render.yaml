@@ -2,6 +2,6 @@ services:
   - type: web
     name: taipei-parking
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m uvicorn server:app --host 0.0.0.0 --port $PORT
+    buildCommand: "./.venv/bin/pip install -r requirements.txt || pip install -r requirements.txt"
+    startCommand: "./.venv/bin/uvicorn server:app --host 0.0.0.0 --port $PORT"
     plan: free
