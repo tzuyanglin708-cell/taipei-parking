@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>台北市即時停車位地圖</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    #header { padding: 12px 20px; background: #1e293b; color: white; display: flex; justify-content: space-between; align-items: center; }
+    #status { font-size: 14px; color: #94a3b8; }
+    #map { height: calc(100vh - 53px); width: 100%; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: bold; color: white; }
+    .badge-green { background-color: #10b981; }
+    .badge-red { background-color: #ef4444; }
+  </style>
+</head>
+<body>
+
+  <div id="header">
+    <h3>🚗 台北市即時停車位地圖</h3>
+    <div id="status">資料載入中...</div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const map = L.map('map').setView([25.042, 121.535], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const statusEl = document.getElementById('status');
+
+    // TWD97 二度分帶座標 轉 WGS84 經緯度演算法
+    function twd97ToWgs84(x, y) {
+      const a = 6378137.0;
+      const b = 6356752.314245;
+      const lng0 = 121 * Math.PI / 180;
+      const k0 = 0.9999;
+      const dx = 250000;
+      const e = Math.sqrt(1 - (b * b) / (a * a));
+      const e2 = (e * e) / (1 - e * e);
+
+      x -= dx;
+      const M = y / k0;
+      const mu = M / (a * (1 - e * e / 4 - 3 * Math.pow(e, 4) / 64 - 5 * Math.pow(e, 6) / 256));
+      const e1 = (1 - Math.sqrt(1 - e * e)) / (1 + Math.sqrt(1 - e * e));
+
+      const J1 = 3 * e1 / 2 - 27 * Math.pow(e1, 3) / 32;
+      const J2 = 21 * Math.pow(e1, 2) / 16 - 55 * Math.pow(e1, 4) / 32;
+      const J3 = 151 * Math.pow(e1, 3) / 96;
+      const J4 = 1097 * Math.pow(e1, 4) / 512;
+
+      const fp = mu + J1 * Math.sin(2 * mu) + J2 * Math.sin(4 * mu) + J3 * Math.sin(6 * mu) + J4 * Math.sin(8 * mu);
+      const C1 = e2 * Math.pow(Math.cos(fp), 2);
+      const T1 = Math.pow(Math.tan(fp), 2);
+      const R1 = a * (1 - e * e) / Math.pow(1 - e * e * Math.pow(Math.sin(fp), 2), 1.5);
+      const N1 = a / Math.sqrt(1 - e * e * Math.pow(Math.sin(fp), 2));
+      const D = x / (N1 * k0);
+
+      const lat = fp - (N1 * Math.tan(fp) / R1) * (Math.pow(D, 2) / 2 - (5 + 3 * T1 + 10 * C1 - 4 * Math.pow(C1, 2) - 9 * e2) * Math.pow(D, 4) / 24 + (61 + 90 * T1 + 298 * C1 + 45 * Math.pow(T1, 2) - 252 * e2 - 3 * Math.pow(C1, 2)) * Math.pow(D, 6) / 720);
+      const lng = lng0 + (D - (1 + 2 * T1 + C1) * Math.pow(D, 3) / 6 + (5 - 2 * C1 + 28 * T1 - 3 * Math.pow(C1, 2) + 8 * e2 + 24 * Math.pow(T1, 2)) * Math.pow(D, 5) / 120) / Math.cos(fp);
+
+      return { lat: lat * 180 / Math.PI, lng: lng * 180 / Math.PI };
+    }
+
+    async function loadData() {
+      try {
+        const res = await fetch('http://127.0.0.1:8000/api/parking');
+        const data = await res.json();
+
+        const availMap = new Map();
+        data.avail.forEach(p => availMap.set(p.id, p.availablecar));
+
+        let count = 0;
+        data.desc.forEach(p => {
+          let lat, lng;
+
+          // 優先讀取 EntranceCoord 入口經緯度，否則換算 tw97
+          const entrance = p.EntranceCoord?.EntrancecoordInfo?.[0];
+          if (entrance && entrance.Xcod && entrance.Ycod) {
+            lat = parseFloat(entrance.Xcod);
+            lng = parseFloat(entrance.Ycod);
+          } else if (p.tw97x && p.tw97y) {
+            const coord = twd97ToWgs84(parseFloat(p.tw97x), parseFloat(p.tw97y));
+            lat = coord.lat;
+            lng = coord.lng;
+          }
+
+          // 確保落在台北市正常經緯度範圍內 (24.9 ~ 25.3, 121.4 ~ 121.7)
+          if (lat >= 24.9 && lat <= 25.3 && lng >= 121.4 && lng <= 121.7) {
+            const availCars = availMap.get(p.id);
+            const isFull = availCars === undefined || availCars <= 0;
+            const badgeClass = isFull ? 'badge-red' : 'badge-green';
+            const carText = availCars !== undefined ? (availCars <= 0 ? '已客滿' : `剩餘 ${availCars} 位`) : '無即時數據';
+
+            const popup = `
+              <div style="font-size:14px; line-height:1.6;">
+                <h4 style="margin:0 0 5px 0;">${p.name}</h4>
+                <div><b>汽車位：</b> <span class="badge ${badgeClass}">${carText}</span> (總數 ${p.totalcar || '未提供'})</div>
+                <div><b>地址：</b> ${p.address || '無'}</div>
+                <div><b>收費：</b> ${p.payex || '現場公告為主'}</div>
+              </div>
+            `;
+            L.marker([lat, lng]).bindPopup(popup).addTo(map);
+            count++;
+          }
+        });
+
+        statusEl.innerText = `標註成功：已在地圖上標記 ${count} 筆停車場`;
+      } catch (err) {
+        console.error(err);
+        statusEl.innerText = '載入失敗，請確認 server.py 是否仍在運行。';
+      }
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
